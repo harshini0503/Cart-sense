@@ -1,0 +1,87 @@
+:root {
+  --cs-bg-1: #08111f;
+  --cs-bg-2: #0c1629;
+  --cs-line: rgba(255,255,255,0.08);
+  --cs-text-soft: rgba(255,255,255,0.68);
+}
+
+.cs-muted {
+  color: var(--cs-text-soft);
+}
+
+.cs-fade-up {
+  animation: csFadeUp 420ms ease both;
+}
+
+.cs-stagger > * {
+  animation: csFadeUp 480ms ease both;
+}
+
+.cs-stagger > *:nth-of-type(2) { animation-delay: 50ms; }
+.cs-stagger > *:nth-of-type(3) { animation-delay: 90ms; }
+.cs-stagger > *:nth-of-type(4) { animation-delay: 130ms; }
+.cs-stagger > *:nth-of-type(5) { animation-delay: 170ms; }
+.cs-stagger > *:nth-of-type(6) { animation-delay: 210ms; }
+
+.cs-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.cs-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 20%, rgba(255,255,255,0.06) 48%, transparent 76%);
+  transform: translateX(-120%);
+  animation: csSheen 6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes csFadeUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes csSheen {
+  0%, 72%, 100% { transform: translateX(-125%); }
+  82% { transform: translateX(125%); }
+}
+
+.cs-horizontal-nav {
+  min-width: max-content;
+}
+
+.cs-nav-pill {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.cs-nav-pill:hover {
+  transform: translateY(-1px);
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(76,174,255,0.18);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+}
+
+.cs-nav-pill-active {
+  background: linear-gradient(135deg, rgba(76,174,255,0.22), rgba(124,255,178,0.18));
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05), 0 12px 28px rgba(0,0,0,0.18);
+}
+
+.cs-icon-pulse {
+  animation: csIconPulse 4s ease-in-out infinite;
+}
+
+@keyframes csIconPulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(124,255,178,0); }
+  50% { transform: scale(1.06); box-shadow: 0 0 28px rgba(124,255,178,0.08); }
+}

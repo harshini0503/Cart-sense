@@ -1,0 +1,167 @@
+"""SQLite schema migrations for CartSense (no Alembic)."""
+from __future__ import annotations
+
+from sqlalchemy import text
+
+
+def _table_cols(conn, table: str) -> set[str]:
+    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    return {r[1] for r in rows}
+
+
+def migrate_sqlite(conn) -> None:
+    """Run migrations in a transaction. Caller provides SQLite connection."""
+    conn.execute(text("PRAGMA foreign_keys=OFF"))
+    conn.execute(text("BEGIN"))
+
+    try:
+        # invite_tokens.invite_email
+        if "invite_tokens" in _tables(conn):
+            cols = _table_cols(conn, "invite_tokens")
+            if "invite_email" not in cols:
+                conn.execute(text("ALTER TABLE invite_tokens ADD COLUMN invite_email VARCHAR(255)"))
+
+        def _col_type(conn, table: str, col: str) -> str:
+            for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall():
+                if r[1] == col:
+                    return (r[2] or "").upper()
+            return ""
+
+        # purchase_items: quantity REAL
+        if "purchase_items" in _tables(conn):
+            qtyp = _col_type(conn, "purchase_items", "quantity")
+            if "INT" in qtyp:
+                conn.execute(
+                    text(
+                        """
+                    CREATE TABLE purchase_items_new (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      purchase_id INTEGER NOT NULL,
+                      catalog_item_id INTEGER NOT NULL,
+                      store_id INTEGER NOT NULL,
+                      quantity REAL NOT NULL DEFAULT 1,
+                      FOREIGN KEY (purchase_id) REFERENCES purchases (id),
+                      FOREIGN KEY (catalog_item_id) REFERENCES catalog_items (id),
+                      FOREIGN KEY (store_id) REFERENCES stores (id)
+                    )
+                    """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                    INSERT INTO purchase_items_new (id, purchase_id, catalog_item_id, store_id, quantity)
+                    SELECT id, purchase_id, catalog_item_id, store_id, CAST(quantity AS REAL) FROM purchase_items
+                    """
+                    )
+                )
+                conn.execute(text("DROP TABLE purchase_items"))
+                conn.execute(text("ALTER TABLE purchase_items_new RENAME TO purchase_items"))
+
+        # inventory_items: quantity REAL + last_purchase_store_id
+        if "inventory_items" in _tables(conn):
+            cols = _table_cols(conn, "inventory_items")
+            qtyp = _col_type(conn, "inventory_items", "quantity")
+            need_rebuild = "last_purchase_store_id" not in cols or "INT" in qtyp
+            if need_rebuild:
+                conn.execute(
+                    text(
+                        """
+                    CREATE TABLE inventory_items_new (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      household_id INTEGER NOT NULL,
+                      catalog_item_id INTEGER NOT NULL,
+                      quantity REAL NOT NULL DEFAULT 0,
+                      last_purchase_store_id INTEGER,
+                      FOREIGN KEY (household_id) REFERENCES households (id),
+                      FOREIGN KEY (catalog_item_id) REFERENCES catalog_items (id),
+                      FOREIGN KEY (last_purchase_store_id) REFERENCES stores (id),
+                      UNIQUE (household_id, catalog_item_id)
+                    )
+                    """
+                    )
+                )
+                if "last_purchase_store_id" in cols:
+                    conn.execute(
+                        text(
+                            """
+                        INSERT INTO inventory_items_new
+                        (id, household_id, catalog_item_id, quantity, last_purchase_store_id)
+                        SELECT id, household_id, catalog_item_id, CAST(quantity AS REAL), last_purchase_store_id
+                        FROM inventory_items
+                        """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                        INSERT INTO inventory_items_new
+                        (id, household_id, catalog_item_id, quantity, last_purchase_store_id)
+                        SELECT id, household_id, catalog_item_id, CAST(quantity AS REAL), NULL
+                        FROM inventory_items
+                        """
+                        )
+                    )
+                conn.execute(text("DROP TABLE inventory_items"))
+                conn.execute(text("ALTER TABLE inventory_items_new RENAME TO inventory_items"))
+
+        # shopping_list_items: quantity REAL + unit columns + new UNIQUE
+        if "shopping_list_items" in _tables(conn):
+            cols = _table_cols(conn, "shopping_list_items")
+            if "quantity_unit" not in cols:
+                conn.execute(
+                    text(
+                        """
+                    CREATE TABLE shopping_list_items_new (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      shopping_list_id INTEGER NOT NULL,
+                      catalog_item_id INTEGER NOT NULL,
+                      store_id INTEGER NOT NULL,
+                      quantity REAL NOT NULL DEFAULT 1,
+                      quantity_unit VARCHAR(20) NOT NULL DEFAULT 'count',
+                      unit_label VARCHAR(32),
+                      status VARCHAR(30) NOT NULL,
+                      created_at DATETIME,
+                      FOREIGN KEY (shopping_list_id) REFERENCES shopping_lists (id),
+                      FOREIGN KEY (catalog_item_id) REFERENCES catalog_items (id),
+                      FOREIGN KEY (store_id) REFERENCES stores (id),
+                      UNIQUE (shopping_list_id, catalog_item_id, store_id, quantity_unit)
+                    )
+                    """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                    INSERT INTO shopping_list_items_new
+                    (id, shopping_list_id, catalog_item_id, store_id, quantity, quantity_unit, unit_label, status, created_at)
+                    SELECT id, shopping_list_id, catalog_item_id, store_id, CAST(quantity AS REAL),
+                           'count', 'each', status, created_at
+                    FROM shopping_list_items
+                    """
+                    )
+                )
+                conn.execute(text("DROP TABLE shopping_list_items"))
+                conn.execute(text("ALTER TABLE shopping_list_items_new RENAME TO shopping_list_items"))
+
+        conn.execute(text("COMMIT"))
+    except Exception:
+        conn.execute(text("ROLLBACK"))
+        raise
+    finally:
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
+def _tables(conn) -> set[str]:
+    rows = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+    return {r[0] for r in rows}
+
+
+def apply_migrations(db) -> None:
+    engine = db.engine
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.connect() as conn:
+        migrate_sqlite(conn)
+        conn.commit()

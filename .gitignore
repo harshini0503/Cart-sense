@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+
+backend/cartsense.db
+backend/uploads/
+backend/__pycache__/
+
+frontend/node_modules/
+.vite/
+
+*.env
+*.log
+
