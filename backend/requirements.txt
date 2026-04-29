@@ -1,9 +1,10 @@
-Flask
-Flask-Cors
-Flask-JWT-Extended
-Flask-SQLAlchemy
+flask
+flask-cors
+flask-jwt-extended
+flask-sqlalchemy
 python-dotenv
 pdfplumber
 pypdf
-Pillow
+pillow
 pytesseract
+gunicorn
