@@ -13,18 +13,17 @@
     "@emotion/styled": "*",
     "@mui/icons-material": "*",
     "@mui/material": "*",
-    "recharts": "*",
     "react": "*",
     "react-dom": "*",
-    "react-router-dom": "*"
+    "react-router-dom": "*",
+    "recharts": "*"
   },
   "devDependencies": {
+    "@types/node": "*",
     "@types/react": "*",
     "@types/react-dom": "*",
-    "@types/node": "*",
     "@vitejs/plugin-react": "*",
     "typescript": "*",
-    "vite": "*"
+    "vite": "^8.0.10"
   }
 }
-
