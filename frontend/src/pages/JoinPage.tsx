@@ -150,7 +150,7 @@ export function JoinPage() {
               try {
                 await acceptInvite(inviteToken.trim());
                 setOk("Joined household. Opening dashboard…");
-                setTimeout(() => navigate("/app", { replace: true }), 500);
+                setTimeout(() => navigate("/", { replace: true }), 500);
               } catch (e: any) {
                 setErr(e?.message || "Could not join household");
               } finally {

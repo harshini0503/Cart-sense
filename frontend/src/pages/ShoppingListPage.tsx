@@ -56,7 +56,7 @@ type EditDraft = {
 
 type HouseholdMember = { id: number; name: string; email: string; role: string };
 
-const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "snacks", "other"];
+const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "nuts_dry_fruits", "snacks", "other"];
 const glassPanelSx = {
   borderRadius: 5,
   background: "rgba(8,18,33,0.74)",
@@ -330,7 +330,7 @@ export function ShoppingListPage({ householdId }: { householdId: number }) {
                   <TextField select label="Category" value={category} onChange={(e) => setCategory(e.target.value)} size="small" sx={{ minWidth: 180 }}>
                     {CATEGORY_OPTIONS.map((c) => (
                       <MenuItem key={c} value={c}>
-                        {c}
+                        {c === "nuts_dry_fruits" ? "nuts / dry fruits" : c}
                       </MenuItem>
                     ))}
                   </TextField>

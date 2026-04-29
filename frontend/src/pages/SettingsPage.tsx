@@ -13,11 +13,14 @@ import SettingsSuggestRoundedIcon from "@mui/icons-material/SettingsSuggestRound
 import LinkRoundedIcon from "@mui/icons-material/LinkRounded";
 import EditRoadRoundedIcon from "@mui/icons-material/EditRoadRounded";
 import Inventory2RoundedIcon from "@mui/icons-material/Inventory2Rounded";
+import GroupRemoveRoundedIcon from "@mui/icons-material/GroupRemoveRounded";
+import PersonRemoveAlt1RoundedIcon from "@mui/icons-material/PersonRemoveAlt1Rounded";
 import { apiFetch } from "../api";
 import { GlassPanel, SectionHeader, innerCardSx } from "../components/Glass";
 import { useAuth } from "../hooks/useAuth";
 
 type Store = { id: number; name: string };
+type HouseholdMember = { id: number; name: string; email: string; role: string };
 type MappingItem = {
   id: number;
   name: string;
@@ -36,15 +39,16 @@ type AliasItem = {
   preferredStoreName?: string | null;
 };
 
-const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "snacks", "other"];
+const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "nuts_dry_fruits", "snacks", "other"];
 
 export function SettingsPage() {
-  const { token, activeHouseholdId, createHousehold, inviteToHousehold } = useAuth();
+  const { token, user, households, activeHouseholdId, createHousehold, inviteToHousehold } = useAuth();
   const [createName, setCreateName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [invitePath, setInvitePath] = useState<string | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
+  const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [items, setItems] = useState<MappingItem[]>([]);
   const [aliases, setAliases] = useState<AliasItem[]>([]);
   const [search, setSearch] = useState("");
@@ -53,16 +57,24 @@ export function SettingsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const activeMembership = useMemo(
+    () => households.find((household) => household.id === activeHouseholdId) || null,
+    [activeHouseholdId, households]
+  );
+  const canManageMembers = activeMembership?.role === "owner";
+
   async function loadData() {
     if (!token || !activeHouseholdId) return;
     try {
-      const [storeRes, mappingRes] = await Promise.all([
+      const [storeRes, mappingRes, membersRes] = await Promise.all([
         apiFetch<{ stores: Store[] }>(`/api/catalog/stores?household_id=${activeHouseholdId}`, { token }),
         apiFetch<{ items: MappingItem[]; aliases: AliasItem[] }>(`/api/mappings/overview?household_id=${activeHouseholdId}`, { token }),
+        apiFetch<{ members: HouseholdMember[] }>(`/api/households/${activeHouseholdId}/members`, { token }),
       ]);
       setStores(storeRes.stores || []);
       setItems(mappingRes.items || []);
       setAliases(mappingRes.aliases || []);
+      setMembers(membersRes.members || []);
     } catch (e: any) {
       setErrorMsg(e?.message || "Could not load settings");
     }
@@ -137,6 +149,27 @@ export function SettingsPage() {
     }
   }
 
+  async function removeMember(member: HouseholdMember) {
+    if (!token || !activeHouseholdId) return;
+    const confirmed = window.confirm(`Remove ${member.name} from this household? They will lose access to shared lists, receipts, inventory, and insights.`);
+    if (!confirmed) return;
+    setBusy(true);
+    setErrorMsg(null);
+    setMessage(null);
+    try {
+      await apiFetch(`/api/households/${activeHouseholdId}/members/${member.id}`, {
+        method: "DELETE",
+        token,
+      });
+      setMessage(`Removed ${member.name} from the household.`);
+      await loadData();
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Could not remove that member");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Stack spacing={2}>
       <GlassPanel sx={{ p: 2.4 }}>
@@ -144,7 +177,7 @@ export function SettingsPage() {
           <SectionHeader
             eyebrow="Household configuration"
             title="Settings and manual mappings"
-            subtitle="Categories can still be inferred automatically, but preferred stores stay under user control. Update both product mappings and receipt aliases here."
+            subtitle="Categories can still be inferred automatically, but preferred stores stay under user control. Update product mappings, receipt aliases, and household access from here."
             action={<SettingsSuggestRoundedIcon />}
           />
 
@@ -192,12 +225,7 @@ export function SettingsPage() {
                 Generate a shareable invite link for the currently selected household.
               </Typography>
               <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems={{ xs: "stretch", md: "flex-end" }}>
-                <TextField
-                  label="Email to invite"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  fullWidth
-                />
+                <TextField label="Email to invite" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} fullWidth />
                 <Button
                   variant="contained"
                   disabled={!activeHouseholdId || !inviteEmail.trim() || busy}
@@ -242,6 +270,44 @@ export function SettingsPage() {
 
       <GlassPanel sx={{ p: 2.2 }}>
         <SectionHeader
+          eyebrow="Household access"
+          title="Members and household access"
+          subtitle={canManageMembers ? "Remove members who no longer belong to this household." : "Only the household owner can remove members. You can still review everyone who currently has access."}
+          action={<GroupRemoveRoundedIcon />}
+        />
+        <Stack spacing={1.1} sx={{ mt: 1.5 }}>
+          {members.map((member) => (
+            <Paper key={member.id} sx={{ ...innerCardSx, p: 1.35 }}>
+              <Stack direction={{ xs: "column", lg: "row" }} spacing={1.2} justifyContent="space-between" alignItems={{ xs: "stretch", lg: "center" }}>
+                <Box>
+                  <Typography sx={{ fontWeight: 900 }}>{member.name}</Typography>
+                  <Typography className="cs-muted" sx={{ fontSize: 12 }}>{member.email}</Typography>
+                </Box>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+                  <Typography className="cs-muted" sx={{ fontSize: 12, minWidth: 92 }}>
+                    Role: {member.role}
+                  </Typography>
+                  {canManageMembers && member.role !== "owner" ? (
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      startIcon={<PersonRemoveAlt1RoundedIcon />}
+                      disabled={busy || member.id === user?.id}
+                      onClick={() => removeMember(member)}
+                      sx={{ borderRadius: 999, fontWeight: 900 }}
+                    >
+                      Remove access
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Stack>
+            </Paper>
+          ))}
+        </Stack>
+      </GlassPanel>
+
+      <GlassPanel sx={{ p: 2.2 }}>
+        <SectionHeader
           eyebrow="Product mappings"
           title="Canonical products and preferred stores"
           subtitle="Review the saved product list, update names or categories, and manually assign the preferred store when you want to change it."
@@ -265,11 +331,11 @@ export function SettingsPage() {
                   size="small"
                   value={item.category}
                   onChange={(e) => setItems((cur) => cur.map((x) => (x.id === item.id ? { ...x, category: e.target.value } : x)))}
-                  sx={{ minWidth: 170 }}
+                  sx={{ minWidth: 190 }}
                 >
                   {CATEGORY_OPTIONS.map((category) => (
                     <MenuItem key={category} value={category}>
-                      {category}
+                      {category === "nuts_dry_fruits" ? "nuts / dry fruits" : category}
                     </MenuItem>
                   ))}
                 </TextField>
@@ -332,11 +398,11 @@ export function SettingsPage() {
                   size="small"
                   value={alias.category}
                   onChange={(e) => setAliases((cur) => cur.map((x) => (x.id === alias.id ? { ...x, category: e.target.value } : x)))}
-                  sx={{ minWidth: 170 }}
+                  sx={{ minWidth: 190 }}
                 >
                   {CATEGORY_OPTIONS.map((category) => (
                     <MenuItem key={category} value={category}>
-                      {category}
+                      {category === "nuts_dry_fruits" ? "nuts / dry fruits" : category}
                     </MenuItem>
                   ))}
                 </TextField>

@@ -14,10 +14,10 @@ type InsightCategoryBreakdown = { category: string; quantity: number };
 type CategoryAnalysis = { category: string; quantity: number; share: number; status: string; message: string };
 type SwapSuggestion = {
   fromCategory: string;
-  fromItemName: string;
   toCategory: string;
-  toItemName: string;
+  title: string;
   reason: string;
+  exampleItems?: string[];
 };
 type BalanceSummary = { tone: string; message: string };
 type RefillReminder = {
@@ -43,11 +43,27 @@ type InsightData = {
   analytics: {
     topItems: { itemName: string; quantity: number }[];
     frequentlyPurchasedItems: { itemName: string; quantity: number }[];
-    mostVisitedStores: { storeName: string; quantity: number }[];
+    mostVisitedStores: { storeName: string; quantity?: number; visits?: number }[];
   };
 };
 
 const RANGE_OPTIONS = [7, 14, 30];
+
+function prettyCategory(value?: string) {
+  return (value || "groceries").replace(/_/g, " ");
+}
+
+function normalizeSwapForDisplay(swap: SwapSuggestion): SwapSuggestion {
+  const looksLegacy = /\sto\s/i.test(swap.title || "") || /Consider swapping some/i.test(swap.reason || "");
+  if (!looksLegacy) return swap;
+  const toCategory = swap.toCategory || "groceries";
+  const fromCategory = swap.fromCategory || "other";
+  return {
+    ...swap,
+    title: `Add more ${prettyCategory(toCategory)} next trip`,
+    reason: `Recent purchases are heavier on ${prettyCategory(fromCategory)}. Instead of replacing specific items one-for-one, round out the basket by adding a few ${prettyCategory(toCategory)} staples on the next trip.`,
+  };
+}
 
 function toneStyles(tone?: string) {
   if (tone === "good") return { border: "rgba(124,255,178,0.24)", bg: "linear-gradient(135deg, rgba(124,255,178,0.12), rgba(255,255,255,0.03))" };
@@ -160,16 +176,24 @@ export function InsightsPage({ householdId }: { householdId: number }) {
                 </Typography>
                 <Stack spacing={1}>
                   {data.swaps?.length ? (
-                    data.swaps.slice(0, 4).map((swap, idx) => (
-                      <Box key={idx} sx={{ ...innerCardSx, p: 1.15 }}>
-                        <Typography sx={{ fontWeight: 900 }}>{swap.fromItemName} to {swap.toItemName}</Typography>
-                        <Typography className="cs-muted" sx={{ fontSize: 12, mt: 0.35 }}>{swap.reason}</Typography>
-                        <Stack direction="row" spacing={1} sx={{ mt: 0.75, flexWrap: "wrap" }}>
-                          <CategoryChip category={swap.fromCategory} />
-                          <CategoryChip category={swap.toCategory} />
-                        </Stack>
-                      </Box>
-                    ))
+                    data.swaps.slice(0, 4).map((rawSwap, idx) => {
+                      const swap = normalizeSwapForDisplay(rawSwap);
+                      return (
+                        <Box key={idx} sx={{ ...innerCardSx, p: 1.15 }}>
+                          <Typography sx={{ fontWeight: 900 }}>{swap.title}</Typography>
+                          <Typography className="cs-muted" sx={{ fontSize: 12, mt: 0.35 }}>{swap.reason}</Typography>
+                          {swap.exampleItems?.length ? (
+                            <Typography sx={{ fontSize: 12, mt: 0.75, fontWeight: 700 }}>
+                              Try: {swap.exampleItems.join(", ")}
+                            </Typography>
+                          ) : null}
+                          <Stack direction="row" spacing={1} sx={{ mt: 0.75, flexWrap: "wrap" }}>
+                            <CategoryChip category={swap.fromCategory} />
+                            <CategoryChip category={swap.toCategory} />
+                          </Stack>
+                        </Box>
+                      );
+                    })
                   ) : (
                     <Alert severity="success">Your basket looks fairly balanced right now, so no swaps are needed.</Alert>
                   )}
@@ -254,7 +278,7 @@ export function InsightsPage({ householdId }: { householdId: number }) {
                           <Typography>{item.itemName}</Typography>
                           <Typography sx={{ fontWeight: 900 }}>{item.quantity}</Typography>
                         </Stack>
-                      )) : <Typography className="cs-muted">No data yet.</Typography>}
+                      )) : <Typography className="cs-muted">No purchases yet.</Typography>}
                     </Stack>
                   </Box>
                   <Box sx={{ ...innerCardSx, p: 1.1 }}>
@@ -263,9 +287,9 @@ export function InsightsPage({ householdId }: { householdId: number }) {
                       {data.analytics?.mostVisitedStores?.length ? data.analytics.mostVisitedStores.map((store) => (
                         <Stack key={store.storeName} direction="row" justifyContent="space-between" spacing={1}>
                           <Typography>{store.storeName}</Typography>
-                          <Typography sx={{ fontWeight: 900 }}>{store.quantity}</Typography>
+                          <Typography sx={{ fontWeight: 900 }}>{store.visits ?? store.quantity ?? 0}</Typography>
                         </Stack>
-                      )) : <Typography className="cs-muted">No store data yet.</Typography>}
+                      )) : <Typography className="cs-muted">No store visits yet.</Typography>}
                     </Stack>
                   </Box>
                 </Box>

@@ -20,7 +20,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from migrate_schema import apply_migrations
-from receipt_parse import parse_receipt_file
+from receipt_parse import is_receipt_noise_candidate, parse_receipt_file
 
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +60,7 @@ CATEGORIES = [
     "vegetables",
     "fruits",
     "dairy",
+    "nuts_dry_fruits",
     "snacks",
     "other",
 ]
@@ -70,7 +71,7 @@ DEFAULT_STORES = ["Walmart", "Target", "Costco", "Trader Joe's", "Whole Foods"]
 # Receipt parsing is mocked (no OCR). We infer items from filename keywords.
 RECEIPT_KEYWORD_MAP = {
     "chips": ("snacks", "Chips"),
-    "nuts": ("snacks", "Mixed Nuts"),
+    "nuts": ("nuts_dry_fruits", "Mixed Nuts"),
     "sugar": ("snacks", "Sugary Cereal"),
     "cereal": ("carbs", "Cereal"),
     "oatmeal": ("carbs", "Oatmeal"),
@@ -89,18 +90,15 @@ RECEIPT_KEYWORD_MAP = {
     "salad": ("vegetables", "Salad Mix"),
 }
 
-# Friendly swap suggestions by heavy category.
-SWAP_BY_CATEGORY = {
-    # Order matters: the first non-heavy-category suggestion is picked.
-    "snacks": [
-        ("protein", "Mixed Nuts"),
-        ("carbs", "Oatmeal"),
-        ("carbs", "Whole-grain crackers"),
-        ("vegetables", "Salad Mix"),
-    ],
-    "carbs": [("carbs", "Sugary cereal"), ("carbs", "Refined carbs"), ("protein", "Lean protein"), ("vegetables", "Roasted vegetables")],
-    "dairy": [("dairy", "Cheese-heavy"), ("fruits", "Fresh fruit"), ("vegetables", "Vegetables sides")],
-    "protein": [("protein", "Protein-heavy"), ("vegetables", "Vegetable sides"), ("fruits", "Fresh fruit")],
+# Category-level rebalance ideas used for insights suggestions.
+CATEGORY_REBALANCE_IDEAS = {
+    "carbs": ["brown rice", "oats", "whole wheat bread", "tortillas"],
+    "protein": ["eggs", "beans", "tofu", "lentils"],
+    "vegetables": ["spinach", "broccoli", "carrots", "bell peppers"],
+    "fruits": ["bananas", "apples", "berries", "oranges"],
+    "dairy": ["milk", "yogurt", "paneer", "cheese"],
+    "nuts_dry_fruits": ["almonds", "cashews", "raisins", "mixed nuts"],
+    "snacks": ["popcorn", "trail mix", "crackers", "granola bars"],
 }
 
 RECEIPT_BRAND_PREFIXES = {
@@ -123,6 +121,22 @@ RECEIPT_BRAND_PREFIXES = {
 
 RECEIPT_SIZE_WORDS = {
     "oz", "ounce", "ounces", "lb", "lbs", "kg", "g", "mg", "ml", "l", "ltr", "pk", "ct", "count", "ea", "each"
+}
+
+RECEIPT_NOISE_WORDS = {
+    "original", "flavor", "flavored", "ready", "to", "eat", "shelf", "stable", "steamable",
+    "no", "added", "sugars", "bulk", "unavailable", "shopped", "sharing", "movie", "theater",
+    "done", "right", "thin", "sliced", "organic", "pasteurized", "pulp", "resealable", "plastic",
+    "bag", "box", "bottle", "cup", "jar", "can", "frozen", "raw", "jumbo", "tail", "off",
+}
+
+
+RECEIPT_DESCRIPTOR_WORDS = {
+    "original", "crunchy", "flavored", "flavour", "snack", "snacks", "ready", "to", "eat", "ready-to-eat",
+    "shelf", "stable", "shelf-stable", "resealable", "plastic", "bag", "bags", "box", "bottle", "cup", "jar", "can",
+    "done", "right", "thin", "sliced", "organic", "bulk", "unavailable", "sharing", "movie", "theater", "butter",
+    "flavor", "pulp", "jumbo", "tail-off", "tail", "off", "frozen", "steamable", "no", "added", "sugars",
+    "pasteurized"
 }
 
 
@@ -381,16 +395,18 @@ def guess_category_from_name(value: str) -> str:
     name = normalize_spaces((value or "").lower())
     if not name:
         return "other"
-    if any(x in name for x in ("banana", "apple", "orange", "berry", "grape", "melon", "fruit", "avocado", "mango")):
+    if any(x in name for x in ("banana", "apple", "orange", "berry", "grape", "melon", "fruit", "avocado", "mango", "juice")):
         return "fruits"
     if any(x in name for x in ("spinach", "lettuce", "broccoli", "carrot", "tomato", "onion", "pepper", "salad", "kale", "cucumber", "potato", "veg")):
         return "vegetables"
+    if any(x in name for x in ("popcorn", "chip", "cookie", "candy", "snack", "soda", "juice drink", "brownie", "ice cream", "corn nuts")):
+        return "snacks"
     if any(x in name for x in ("milk", "cheese", "yogurt", "butter", "cream", "curd", "paneer", "half and half")):
         return "dairy"
-    if any(x in name for x in ("chicken", "beef", "pork", "fish", "salmon", "tofu", "turkey", "egg", "eggs", "lentil", "beans", "peanut", "nuts")):
+    if any(x in name for x in ("almond", "almonds", "cashew", "cashews", "pistachio", "pistachios", "walnut", "walnuts", "pecan", "pecans", "hazelnut", "hazelnuts", "raisin", "raisins", "date", "dates", "fig", "figs", "dry fruit", "mixed nuts", "peanut", "peanuts")):
+        return "nuts_dry_fruits"
+    if any(x in name for x in ("chicken", "beef", "pork", "fish", "salmon", "tofu", "turkey", "egg", "eggs", "lentil", "beans", "shrimp")):
         return "protein"
-    if any(x in name for x in ("chip", "cookie", "candy", "snack", "soda", "juice drink", "brownie", "ice cream")):
-        return "snacks"
     if any(x in name for x in ("bread", "rice", "pasta", "cereal", "oat", "flour", "tortilla", "cracker")):
         return "carbs"
     return "other"
@@ -401,7 +417,9 @@ def normalize_receipt_name(value: str) -> str:
     if not name:
         return ""
     lowered = name.lower()
-    lowered = re.sub(r"\b\d+(?:\.\d+)?\s*(?:oz|ounce|ounces|lb|lbs|kg|g|ct|count|pk|pack|ea|each)\b", " ", lowered)
+    lowered = re.sub(r"\bqty\s*\d+(?:\.\d+)?\b", " ", lowered)
+    lowered = re.sub(r"\b\d+(?:\.\d+)?\s*(?:oz|ounce|ounces|lb|lbs|kg|g|mg|ml|l|ltr|pk|ct|count|ea|each|gallon)\b(?:\s*(?:bag|box|bottle|pack|packs|cup|jar|can))?", " ", lowered)
+    lowered = re.sub(r"\bshopped\b", " ", lowered)
     lowered = re.sub(r"[^a-z0-9'&\-\s]", " ", lowered)
     lowered = normalize_spaces(lowered)
     for prefix in sorted(RECEIPT_BRAND_PREFIXES, key=len, reverse=True):
@@ -414,6 +432,66 @@ def normalize_receipt_name(value: str) -> str:
         lowered = normalize_spaces(name.lower())
     pretty = " ".join(part.capitalize() if part not in {"and", "of"} else part for part in lowered.split())
     return pretty or name[:255]
+
+
+def receipt_canonical_key(value: str) -> str:
+    base = normalize_receipt_name(value).lower()
+    base = re.sub(r"[^a-z0-9\s]", " ", base)
+    tokens = []
+    seen = set()
+    for tok in normalize_spaces(base).split():
+        if tok in RECEIPT_SIZE_WORDS or tok in RECEIPT_DESCRIPTOR_WORDS:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", tok):
+            continue
+        if len(tok) <= 1:
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        tokens.append(tok)
+    if not tokens:
+        return normalize_spaces(base)
+    return normalize_spaces(" ".join(tokens))
+
+
+def receipt_canonical_tokens(value: str) -> list[str]:
+    key = receipt_canonical_key(value)
+    return [tok for tok in key.split() if tok]
+
+
+def canonical_names_match(a: str, b: str) -> bool:
+    ka = receipt_canonical_tokens(a)
+    kb = receipt_canonical_tokens(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    sa, sb = set(ka), set(kb)
+    if sa == sb:
+        return True
+    overlap = len(sa & sb)
+    smaller = min(len(sa), len(sb))
+    larger = max(len(sa), len(sb))
+    if overlap >= max(2, smaller) and (larger - overlap) <= 1:
+        return True
+    if smaller >= 3 and overlap >= smaller - 1 and (larger - overlap) <= 1:
+        return True
+    return False
+
+
+def find_catalog_item_by_canonical(name: str, category: str | None = None) -> Optional[CatalogItem]:
+    key = receipt_canonical_key(name)
+    if not key:
+        return None
+    query = CatalogItem.query
+    if category:
+        query = query.filter(db.func.lower(CatalogItem.category) == (category or 'other').lower())
+    candidates = query.order_by(CatalogItem.id.asc()).all()
+    for item in candidates:
+        if canonical_names_match(item.name, key):
+            return item
+    return None
 
 
 def find_receipt_alias(household_id: int, alias_name: str) -> Optional[ReceiptAlias]:
@@ -461,15 +539,15 @@ def resolve_receipt_item(household_id: int, raw_name: str, category: str, store_
             matched_by = "normalized"
 
     if not catalog_item:
+        catalog_item = find_catalog_item_by_canonical(normalized_name or raw_name, category=category) or find_catalog_item_by_canonical(normalized_name or raw_name)
+        if catalog_item:
+            matched_by = "canonical"
+
+    if not catalog_item:
         catalog_item = find_catalog_item(raw_name, category=category)
-        if catalog_item and catalog_item.category == "other" and category != "other" and normalized_name and normalized_name.lower() != raw_name.lower():
-            better_match = find_catalog_item(normalized_name, category=category) or find_catalog_item(normalized_name)
-            if better_match:
-                catalog_item = better_match
-                matched_by = "normalized"
-            else:
-                catalog_item.category = category
-                matched_by = "exact_upgraded"
+        if catalog_item and catalog_item.category == "other" and category != "other":
+            catalog_item.category = category
+            matched_by = "exact_upgraded"
         elif catalog_item:
             matched_by = matched_by or "exact"
 
@@ -720,34 +798,36 @@ def ensure_catalog_item(name: str, category: str, preferred_store_id: Optional[i
         .order_by(CatalogItem.id.asc())
         .first()
     )
+    if not item:
+        item = find_catalog_item_by_canonical(normalized_name, category=normalized_category) or find_catalog_item_by_canonical(normalized_name)
+        if item and item.category == "other" and normalized_category != "other":
+            item.category = normalized_category
+    if not item:
+        exact_name_item = (
+            CatalogItem.query.filter(db.func.lower(CatalogItem.name) == normalized_name.lower())
+            .order_by(CatalogItem.id.asc())
+            .first()
+        )
+        if exact_name_item:
+            if exact_name_item.category == "other" and normalized_category != "other":
+                duplicate_target = (
+                    CatalogItem.query.filter(db.func.lower(CatalogItem.name) == normalized_name.lower())
+                    .filter(db.func.lower(CatalogItem.category) == normalized_category.lower())
+                    .filter(CatalogItem.id != exact_name_item.id)
+                    .order_by(CatalogItem.id.asc())
+                    .first()
+                )
+                if duplicate_target:
+                    exact_name_item = merge_catalog_items(duplicate_target, exact_name_item)
+                else:
+                    exact_name_item.category = normalized_category
+            item = exact_name_item
+
     if item:
         if item.preferred_store_id is None and preferred_store_id:
             item.preferred_store_id = preferred_store_id
-            db.session.commit()
-        return item
-
-    exact_name_item = (
-        CatalogItem.query.filter(db.func.lower(CatalogItem.name) == normalized_name.lower())
-        .order_by(CatalogItem.id.asc())
-        .first()
-    )
-    if exact_name_item:
-        if exact_name_item.category == "other" and normalized_category != "other":
-            duplicate_target = (
-                CatalogItem.query.filter(db.func.lower(CatalogItem.name) == normalized_name.lower())
-                .filter(db.func.lower(CatalogItem.category) == normalized_category.lower())
-                .filter(CatalogItem.id != exact_name_item.id)
-                .order_by(CatalogItem.id.asc())
-                .first()
-            )
-            if duplicate_target:
-                exact_name_item = merge_catalog_items(duplicate_target, exact_name_item)
-            else:
-                exact_name_item.category = normalized_category
-        if exact_name_item.preferred_store_id is None and preferred_store_id:
-            exact_name_item.preferred_store_id = preferred_store_id
         db.session.commit()
-        return exact_name_item
+        return item
 
     item = CatalogItem(name=normalized_name, category=normalized_category, preferred_store_id=preferred_store_id)
     db.session.add(item)
@@ -787,16 +867,34 @@ def repair_catalog_categories():
             changed = True
 
     dedupe_map = {}
-    for item in CatalogItem.query.order_by(CatalogItem.id.asc()).all():
+    items = CatalogItem.query.order_by(CatalogItem.id.asc()).all()
+    for item in items:
         if not item or not item.name:
             continue
-        key = (normalize_spaces(item.name).lower(), (item.category or 'other').strip().lower() or 'other')
+        key = (receipt_canonical_key(item.name), (item.category or 'other').strip().lower() or 'other')
         existing = dedupe_map.get(key)
         if existing and existing.id != item.id:
             merge_catalog_items(existing, item)
             changed = True
         else:
             dedupe_map[key] = item
+
+    items = CatalogItem.query.order_by(CatalogItem.id.asc()).all()
+    seen_by_category = {}
+    for item in items:
+        if not item or not item.name:
+            continue
+        cat = (item.category or 'other').strip().lower() or 'other'
+        bucket = seen_by_category.setdefault(cat, [])
+        merged = False
+        for existing in bucket:
+            if existing.id != item.id and canonical_names_match(existing.name, item.name):
+                merge_catalog_items(existing, item)
+                changed = True
+                merged = True
+                break
+        if not merged:
+            bucket.append(item)
 
     if changed:
         db.session.commit()
@@ -842,7 +940,9 @@ def seed_data_once():
             ("Yogurt", "dairy"),
             ("Cheese", "dairy"),
             ("Chips", "snacks"),
-            ("Mixed Nuts", "snacks"),
+            ("Mixed Nuts", "nuts_dry_fruits"),
+            ("Almonds", "nuts_dry_fruits"),
+            ("Cashews", "nuts_dry_fruits"),
             ("Sugary Cereal", "snacks"),
         ]
         for item_name, category in seed_items:
@@ -1086,6 +1186,28 @@ def household_members(household_id: int):
             ]
         }
     )
+
+
+@app.route("/api/households/<int:household_id>/members/<int:member_user_id>", methods=["DELETE"])
+@jwt_required()
+def household_member_remove(household_id: int, member_user_id: int):
+    user = current_user()
+    membership = get_household_member(household_id, user.id)
+    if not membership:
+        return error("not a member of that household", 403)
+    if membership.role != "owner":
+        return error("only the household owner can remove members", 403)
+
+    target_membership = HouseholdMember.query.filter_by(household_id=household_id, user_id=member_user_id).first()
+    if not target_membership:
+        return error("member not found", 404)
+    if target_membership.role == "owner":
+        return error("cannot remove the household owner", 409)
+
+    InviteToken.query.filter_by(household_id=household_id, invite_email=target_membership.user.email.lower()).delete()
+    db.session.delete(target_membership)
+    db.session.commit()
+    return jsonify({"removed": True, "userId": member_user_id})
 
 
 @app.route("/api/catalog/stores", methods=["GET"])
@@ -1607,6 +1729,7 @@ def shopping_list_checkout():
 def inventory_get():
     user = current_user()
     household_id = request.args.get("household_id", type=int)
+    purchaser_user_id = request.args.get("purchaser_user_id", type=int)
     if household_id is None:
         return error("household_id is required", 400)
     if not get_household_member(int(household_id), user.id):
@@ -1616,6 +1739,17 @@ def inventory_get():
     inv_items = InventoryItem.query.filter_by(household_id=int(household_id)).all()
     inv_map = {inv.catalog_item_id: inv for inv in inv_items}
     catalog_ids = set(inv_map.keys()) | set(essential_map.keys())
+
+    latest_purchase_rows = (
+        PurchaseItem.query.join(Purchase, PurchaseItem.purchase_id == Purchase.id)
+        .filter(Purchase.household_id == int(household_id))
+        .order_by(Purchase.created_at.desc(), PurchaseItem.id.desc())
+        .all()
+    )
+    latest_purchase_by_item = {}
+    for row in latest_purchase_rows:
+        if row.catalog_item_id not in latest_purchase_by_item:
+            latest_purchase_by_item[row.catalog_item_id] = row
 
     out = []
     for catalog_item_id in catalog_ids:
@@ -1635,6 +1769,17 @@ def inventory_get():
             ls = Store.query.filter_by(id=inv.last_purchase_store_id).first()
             last_store_name = ls.name if ls else None
         essential_cfg = essential_map.get(catalog_item_id)
+        latest_purchase = latest_purchase_by_item.get(catalog_item_id)
+        last_purchased_by_user_id = None
+        last_purchased_by_name = None
+        last_purchase_at = None
+        if latest_purchase and latest_purchase.purchase:
+            last_purchased_by_user_id = latest_purchase.purchase.created_by
+            purchaser = User.query.filter_by(id=latest_purchase.purchase.created_by).first()
+            last_purchased_by_name = purchaser.name if purchaser else None
+            last_purchase_at = iso_or_none(latest_purchase.purchase.created_at)
+        if purchaser_user_id and last_purchased_by_user_id != purchaser_user_id:
+            continue
         out.append(
             {
                 "catalogItemId": item.id,
@@ -1644,6 +1789,9 @@ def inventory_get():
                 "preferredStoreId": item.preferred_store_id,
                 "preferredStoreName": preferred_store_name,
                 "lastPurchaseStoreName": last_store_name,
+                "lastPurchasedByUserId": last_purchased_by_user_id,
+                "lastPurchasedByName": last_purchased_by_name,
+                "lastPurchaseAt": last_purchase_at,
                 "essentialThreshold": float(essential_cfg.threshold_quantity) if essential_cfg else None,
                 "essentialEmailEnabled": bool(essential_cfg.email_enabled) if essential_cfg else False,
             }
@@ -1680,13 +1828,16 @@ def inventory_update_item(catalog_item_id: int):
         inv = InventoryItem(household_id=household_id, catalog_item_id=catalog_item_id, quantity=0)
         db.session.add(inv)
 
-    preferred_store_id = data.get("preferred_store_id")
-    if preferred_store_id:
-        store = Store.query.filter_by(id=int(preferred_store_id)).first()
-        if not store:
-            return error("invalid preferred_store_id", 400)
-        ensure_household_store(household_id, store.id)
-        update_catalog_preferred_store(catalog_item, store.id, force=True)
+    if "preferred_store_id" in data:
+        preferred_store_id = data.get("preferred_store_id")
+        if preferred_store_id in (None, "", 0, "0"):
+            update_catalog_preferred_store(catalog_item, None, force=True)
+        else:
+            store = Store.query.filter_by(id=int(preferred_store_id)).first()
+            if not store:
+                return error("invalid preferred_store_id", 400)
+            ensure_household_store(household_id, store.id)
+            update_catalog_preferred_store(catalog_item, store.id, force=True)
 
     inv.quantity = quantity
     evaluate_essential_notifications(household_id)
@@ -1919,6 +2070,8 @@ def receipts_upload():
     for p in parsed:
         category = (p.get("category") or "other").lower()
         raw_name = normalize_spaces(p.get("item_name") or "Item")
+        if is_receipt_noise_candidate(raw_name):
+            continue
         resolved = resolve_receipt_item(int(household_id), raw_name, category, store.id)
         qg = p.get("quantity_guess") or 1
         try:
@@ -1932,6 +2085,8 @@ def receipts_upload():
                 "itemName": resolved["item_name"],
                 "category": resolved["category"],
                 "quantityGuess": qg,
+                "quantityUnit": p.get("quantity_unit") or "count",
+                "unitLabel": p.get("unit_label") or "each",
                 "needsMapping": bool(resolved["needs_mapping"]),
                 "matchedBy": resolved["matched_by"],
             }
@@ -1997,8 +2152,11 @@ def receipts_confirm(receipt_id: int):
         category = (entry.get("category") or "other").strip().lower()
         raw_name = normalize_spaces(entry.get("raw_name") or entry.get("item_name") or "")
         item_name = normalize_spaces(entry.get("item_name") or "")
-        if not item_name and not entry.get("catalog_item_id"):
+        candidate_name = item_name or raw_name
+        if not candidate_name and not entry.get("catalog_item_id"):
             return error("item_name or catalog_item_id is required", 400)
+        if candidate_name and is_receipt_noise_candidate(candidate_name):
+            continue
 
         catalog_item_id = entry.get("catalog_item_id")
         if catalog_item_id:
@@ -2036,6 +2194,9 @@ def receipts_confirm(receipt_id: int):
 
         if raw_name:
             upsert_receipt_alias(receipt.household_id, raw_name, catalog_item.id, user.id)
+            normalized_alias = normalize_receipt_name(raw_name)
+            if normalized_alias and normalized_alias.lower() != raw_name.lower():
+                upsert_receipt_alias(receipt.household_id, normalized_alias, catalog_item.id, user.id)
 
     receipt.status = "confirmed"
     receipt.confirmed_at = now_utc()
@@ -2133,6 +2294,7 @@ def insights(household_id: int):
         "protein": 0.2,
         "carbs": 0.2,
         "dairy": 0.1,
+        "nuts_dry_fruits": 0.1,
         "snacks": 0.1,
         "other": 0.05,
     }
@@ -2184,57 +2346,32 @@ def insights(household_id: int):
             "message": "Your recent basket looks fairly balanced across categories. Nice job keeping variety in the house.",
         }
 
-    low_targets = low_categories or ["vegetables", "fruits", "protein"]
+    def _pretty_category(cat: str | None) -> str:
+        if not cat:
+            return "groceries"
+        return cat.replace("_", " ")
+
+    low_targets = [c for c in (low_categories or ["vegetables", "fruits", "protein", "carbs"]) if c != "other"]
     swaps = []
     if total_qty > 0:
-        heavy_categories_for_swaps = over_categories or ([heavy_category] if heavy_category else [])
-        seen_pairs = set()
+        heavy_categories_for_swaps = [c for c in (over_categories or ([heavy_category] if heavy_category else [])) if c and c != "other"]
+        used_targets = set()
         for category in heavy_categories_for_swaps[:2]:
-            heavy_purchases = (
-                PurchaseItem.query.join(CatalogItem, PurchaseItem.catalog_item_id == CatalogItem.id)
-                .join(Purchase, PurchaseItem.purchase_id == Purchase.id)
-                .filter(Purchase.household_id == household_id)
-                .filter(Purchase.created_at >= since)
-                .filter(db.func.lower(CatalogItem.category) == category.lower())
-                .with_entities(CatalogItem.name, db.func.sum(PurchaseItem.quantity))
-                .group_by(CatalogItem.name)
-                .order_by(db.func.sum(PurchaseItem.quantity).desc())
-                .limit(3)
-                .all()
-            )
-            candidate_targets = []
             for target_category in low_targets:
-                for target_cat, target_item_name in SWAP_BY_CATEGORY.get(category, []):
-                    if target_cat == target_category:
-                        candidate_targets.append((target_cat, target_item_name))
-                default_item = {
-                    "vegetables": "Salad Mix",
-                    "fruits": "Apples",
-                    "protein": "Tofu",
-                    "carbs": "Oatmeal",
-                    "dairy": "Yogurt",
-                    "snacks": "Mixed Nuts",
-                    "other": "Groceries",
-                }.get(target_category, "Groceries")
-                candidate_targets.append((target_category, default_item))
-            for heavy_item_name, _ in heavy_purchases:
-                to_cat, to_item_name = candidate_targets[0]
-                key = (heavy_item_name.lower(), to_item_name.lower())
-                if key in seen_pairs:
-                    continue
-                seen_pairs.add(key)
-                swaps.append(
-                    {
-                        "fromCategory": category,
-                        "fromItemName": heavy_item_name,
-                        "toCategory": to_cat,
-                        "toItemName": to_item_name,
-                        "reason": f"{category.capitalize()} is higher than usual, while {to_cat} is lighter. Consider swapping some {heavy_item_name} for {to_item_name}.",
-                    }
-                )
-                if len(swaps) >= 4:
+                if target_category != category and target_category not in used_targets:
+                    example_items = CATEGORY_REBALANCE_IDEAS.get(target_category, ["balanced staples"])
+                    swaps.append(
+                        {
+                            "fromCategory": category,
+                            "toCategory": target_category,
+                            "title": f"Add more {_pretty_category(target_category)} next trip",
+                            "reason": f"Recent purchases are heavier on {_pretty_category(category)}. Instead of replacing specific items, round out the basket by adding a few {_pretty_category(target_category)} staples on the next trip.",
+                            "exampleItems": example_items,
+                        }
+                    )
+                    used_targets.add(target_category)
                     break
-            if len(swaps) >= 4:
+            if len(swaps) >= 3:
                 break
 
     top_items_rows = (

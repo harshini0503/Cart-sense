@@ -41,12 +41,37 @@ function setStoredToken(token: string | null) {
   }
 }
 
+function getStoredActiveHouseholdId(): number | null {
+  try {
+    const raw = localStorage.getItem("cartsense_active_household_id");
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredActiveHouseholdId(id: number | null) {
+  try {
+    if (id == null) localStorage.removeItem("cartsense_active_household_id");
+    else localStorage.setItem("cartsense_active_household_id", String(id));
+  } catch {
+    // ignore
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(getStoredToken());
   const [user, setUser] = useState<User | null>(null);
   const [households, setHouseholds] = useState<Household[]>([]);
-  const [activeHouseholdId, setActiveHouseholdId] = useState<number | null>(null);
+  const [activeHouseholdId, setActiveHouseholdIdState] = useState<number | null>(getStoredActiveHouseholdId());
   const [loading, setLoading] = useState<boolean>(true);
+
+  const setActiveHouseholdId = useCallback((id: number | null) => {
+    setActiveHouseholdIdState(id);
+    setStoredActiveHouseholdId(id);
+  }, []);
 
   const refresh = useCallback(async (nextToken?: string | null) => {
     const authToken = nextToken ?? token;
@@ -63,10 +88,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       { token: authToken }
     );
 
+    const nextHouseholds = hh.households || [];
+    const storedId = getStoredActiveHouseholdId();
+    const serverId = hh.activeHouseholdId ?? null;
+
+    const preferredId = [
+      activeHouseholdId,
+      storedId,
+      serverId,
+      nextHouseholds?.[0]?.id ?? null,
+    ].find((candidate) =>
+      candidate != null && nextHouseholds.some((household) => household.id === candidate)
+    ) ?? null;
+
     setUser(me);
-    setHouseholds(hh.households || []);
-    setActiveHouseholdId(hh.activeHouseholdId ?? (hh.households?.[0]?.id ?? null));
-  }, [token]);
+    setHouseholds(nextHouseholds);
+    setActiveHouseholdId(preferredId);
+  }, [token, activeHouseholdId, setActiveHouseholdId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,11 +134,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(() => {
     setStoredToken(null);
+    setStoredActiveHouseholdId(null);
     setToken(null);
     setUser(null);
     setHouseholds([]);
     setActiveHouseholdId(null);
-  }, []);
+  }, [setActiveHouseholdId]);
 
   const login = useCallback(
     async (email: string, password: string) => {

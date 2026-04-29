@@ -17,11 +17,13 @@ import SaveIcon from "@mui/icons-material/Save";
 import StorefrontIcon from "@mui/icons-material/Storefront";
 import CategoryIcon from "@mui/icons-material/Category";
 import Inventory2Icon from "@mui/icons-material/Inventory2";
+import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
 import { apiFetch } from "../api";
 import { CategoryChip } from "../components/CategoryChip";
 import { useAuth } from "../hooks/useAuth";
 
 type Store = { id: number; name: string };
+type HouseholdMember = { id: number; name: string; email: string; role: string };
 type InventoryRow = {
   catalogItemId: number;
   itemName: string;
@@ -30,6 +32,9 @@ type InventoryRow = {
   preferredStoreId: number | null;
   preferredStoreName: string | null;
   lastPurchaseStoreName: string | null;
+  lastPurchasedByUserId: number | null;
+  lastPurchasedByName: string | null;
+  lastPurchaseAt: string | null;
   essentialThreshold: number | null;
   essentialEmailEnabled: boolean;
 };
@@ -55,24 +60,28 @@ export function InventoryPage({ householdId }: { householdId: number }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<InventoryRow[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [groupMode, setGroupMode] = useState<GroupMode>("category");
   const [filterStore, setFilterStore] = useState("all");
   const [filterCategory, setFilterCategory] = useState("all");
+  const [filterPurchaser, setFilterPurchaser] = useState("all");
   const [search, setSearch] = useState("");
 
   async function refresh() {
     if (!token) return;
     setLoading(true);
     try {
-      const [inventoryRes, storesRes] = await Promise.all([
+      const [inventoryRes, storesRes, membersRes] = await Promise.all([
         apiFetch<{ inventory: InventoryRow[] }>(`/api/inventory?household_id=${householdId}`, { token }),
         apiFetch<{ stores: Store[] }>(`/api/catalog/stores?household_id=${householdId}`, { token }),
+        apiFetch<{ members: HouseholdMember[] }>(`/api/households/${householdId}/members`, { token }),
       ]);
       setRows(inventoryRes.inventory || []);
       setStores(storesRes.stores || []);
+      setMembers(membersRes.members || []);
       setErrorMsg(null);
     } catch (e: any) {
       setErrorMsg(e?.message || "Could not load inventory");
@@ -87,15 +96,17 @@ export function InventoryPage({ householdId }: { householdId: number }) {
 
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
-      const matchesSearch = !search.trim() || row.itemName.toLowerCase().includes(search.trim().toLowerCase());
-      const matchesStore =
-        filterStore === "all" ||
-        row.preferredStoreName === filterStore ||
-        row.lastPurchaseStoreName === filterStore;
+      const q = search.trim().toLowerCase();
+      const matchesSearch = !q || row.itemName.toLowerCase().includes(q);
+      const matchesStore = filterStore === "all" || row.preferredStoreName === filterStore || row.lastPurchaseStoreName === filterStore;
       const matchesCategory = filterCategory === "all" || row.category === filterCategory;
-      return matchesSearch && matchesStore && matchesCategory;
+      const matchesPurchaser =
+        filterPurchaser === "all" ||
+        String(row.lastPurchasedByUserId || "") === filterPurchaser ||
+        (filterPurchaser === "unknown" && !row.lastPurchasedByUserId);
+      return matchesSearch && matchesStore && matchesCategory && matchesPurchaser;
     });
-  }, [filterCategory, filterStore, rows, search]);
+  }, [filterCategory, filterPurchaser, filterStore, rows, search]);
 
   const groupedRows = useMemo(() => {
     const map = new Map<string, InventoryRow[]>();
@@ -155,7 +166,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
               <Inventory2Icon fontSize="small" /> Current inventory
             </Typography>
             <Typography className="cs-muted" sx={{ fontSize: 12, mt: 0.5 }}>
-              Adjust quantities manually and keep preferred stores stable. Group the pantry by category or by store.
+              Adjust quantities manually, keep preferred stores stable, and filter pantry items by category, store, or who last completed the purchase.
             </Typography>
           </Box>
           <ToggleButtonGroup
@@ -184,7 +195,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
           </ToggleButtonGroup>
         </Stack>
 
-        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.2}>
+        <Stack direction={{ xs: "column", lg: "row" }} spacing={1.2} flexWrap="wrap">
           <TextField
             label="Search inventory"
             size="small"
@@ -203,7 +214,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
             <MenuItem value="all">All categories</MenuItem>
             {categoryOptions.map((category) => (
               <MenuItem key={category} value={category}>
-                {category}
+                {category === "nuts_dry_fruits" ? "nuts / dry fruits" : category}
               </MenuItem>
             ))}
           </TextField>
@@ -222,6 +233,22 @@ export function InventoryPage({ householdId }: { householdId: number }) {
               </MenuItem>
             ))}
           </TextField>
+          <TextField
+            select
+            label="Filter purchaser"
+            size="small"
+            value={filterPurchaser}
+            onChange={(e) => setFilterPurchaser(e.target.value)}
+            sx={{ minWidth: 220 }}
+          >
+            <MenuItem value="all">All household members</MenuItem>
+            {members.map((member) => (
+              <MenuItem key={member.id} value={String(member.id)}>
+                {member.name}
+              </MenuItem>
+            ))}
+            <MenuItem value="unknown">Unknown</MenuItem>
+          </TextField>
         </Stack>
 
         {errorMsg ? <Typography color="error">{errorMsg}</Typography> : null}
@@ -231,7 +258,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
             <CircularProgress />
           </Box>
         ) : filteredRows.length === 0 ? (
-          <Typography className="cs-muted">No inventory yet. Checkout a shopping list or confirm a receipt.</Typography>
+          <Typography className="cs-muted">No inventory matches those filters yet.</Typography>
         ) : (
           <Stack spacing={2}>
             {groupedRows.map((group) => (
@@ -247,7 +274,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
                 <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.2 }}>
                   <Stack direction="row" alignItems="center" spacing={1}>
                     {groupMode === "category" ? <CategoryChip category={group.label} /> : <StorefrontIcon fontSize="small" />}
-                    <Typography sx={{ fontWeight: 900 }}>{group.label}</Typography>
+                    <Typography sx={{ fontWeight: 900 }}>{group.label === "nuts_dry_fruits" ? "nuts / dry fruits" : group.label}</Typography>
                   </Stack>
                   <Typography className="cs-muted" sx={{ fontSize: 12 }}>
                     {group.items.length} item(s)
@@ -269,7 +296,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
                         }}
                       >
                         <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }}>
-                          <Box sx={{ minWidth: 220 }}>
+                          <Box sx={{ minWidth: 240 }}>
                             <Typography sx={{ fontWeight: 900 }}>{row.itemName}</Typography>
                             <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: "wrap" }}>
                               <CategoryChip category={row.category} />
@@ -277,7 +304,10 @@ export function InventoryPage({ householdId }: { householdId: number }) {
                                 Preferred: {row.preferredStoreName || "Not set"}
                               </Typography>
                               <Typography className="cs-muted" sx={{ fontSize: 12 }}>
-                                Last purchase: {row.lastPurchaseStoreName || "-"}
+                                Last store: {row.lastPurchaseStoreName || "-"}
+                              </Typography>
+                              <Typography className="cs-muted" sx={{ fontSize: 12, display: "flex", alignItems: "center", gap: 0.4 }}>
+                                <PersonRoundedIcon sx={{ fontSize: 14 }} /> {row.lastPurchasedByName || "Unknown purchaser"}
                               </Typography>
                             </Stack>
                           </Box>
@@ -305,6 +335,7 @@ export function InventoryPage({ householdId }: { householdId: number }) {
                                   onChange={(e) => setEditDraft({ ...editDraft, preferredStoreId: Number(e.target.value) || null })}
                                   sx={{ minWidth: 200 }}
                                 >
+                                  <MenuItem value="">No preferred store</MenuItem>
                                   {stores.map((store) => (
                                     <MenuItem key={store.id} value={store.id}>
                                       {store.name}

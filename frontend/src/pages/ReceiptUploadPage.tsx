@@ -31,11 +31,21 @@ type ParsedItem = {
   category: string;
   quantityGuess: number;
   quantity: number;
+  quantityUnit: "count" | "weight" | "volume";
+  unitLabel: string;
   needsMapping: boolean;
   matchedBy: string;
 };
 
-const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "snacks", "other"];
+const CATEGORY_OPTIONS = ["carbs", "protein", "vegetables", "fruits", "dairy", "nuts_dry_fruits", "snacks", "other"];
+const MEASURE_OPTIONS = ["each", "bunch", "pack", "bag", "box", "bottle", "cup", "jar", "can", "ct", "lb", "kg", "oz", "ml", "L", "fl oz", "gallon"];
+
+function inferQuantityUnit(label: string): "count" | "weight" | "volume" {
+  const value = (label || "").trim().toLowerCase();
+  if (["lb", "kg", "oz"].includes(value)) return "weight";
+  if (["ml", "l", "fl oz", "gallon"].includes(value)) return "volume";
+  return "count";
+}
 
 export function ReceiptUploadPage({ householdId }: { householdId: number }) {
   const { token, user } = useAuth();
@@ -106,6 +116,8 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
           category: p.category || "other",
           quantityGuess: Number(p.quantityGuess ?? 1),
           quantity: Number(p.quantityGuess ?? 1),
+          quantityUnit: (p.quantityUnit || inferQuantityUnit(p.unitLabel || "each")) as "count" | "weight" | "volume",
+          unitLabel: p.unitLabel || "each",
           needsMapping: Boolean(p.needsMapping),
           matchedBy: p.matchedBy || "unmapped",
         }))
@@ -127,6 +139,8 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
         category: "other",
         quantityGuess: 1,
         quantity: 1,
+        quantityUnit: "count",
+        unitLabel: "each",
         needsMapping: true,
         matchedBy: "manual",
       },
@@ -143,6 +157,8 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
         item_name: p.itemName.trim(),
         category: p.category,
         quantity: p.quantity,
+        quantity_unit: p.quantityUnit,
+        unit_label: p.unitLabel,
       }));
 
     if (cleanItems.length === 0) {
@@ -318,7 +334,7 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
                         fullWidth
                       />
 
-                      <Stack direction="row" spacing={1} alignItems="center">
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
                         <TextField
                           type="number"
                           label="Qty"
@@ -328,8 +344,22 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
                             const val = Math.max(0, Number(e.target.value || 0));
                             setParsedItems((cur) => cur.map((x, i) => (i === idx ? { ...x, quantity: val } : x)));
                           }}
-                          sx={{ width: 110 }}
+                          sx={{ width: { xs: "100%", sm: 110 } }}
                         />
+
+                        <TextField
+                          label="Measure"
+                          select
+                          size="small"
+                          value={p.unitLabel}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setParsedItems((cur) => cur.map((x, i) => (i === idx ? { ...x, unitLabel: val, quantityUnit: inferQuantityUnit(val) } : x)));
+                          }}
+                          sx={{ width: { xs: "100%", sm: 150 } }}
+                        >
+                          {MEASURE_OPTIONS.map((label) => <MenuItem key={label} value={label}>{label}</MenuItem>)}
+                        </TextField>
 
                         <TextField
                           label="Category"
@@ -342,7 +372,7 @@ export function ReceiptUploadPage({ householdId }: { householdId: number }) {
                           }}
                           sx={{ flex: 1 }}
                         >
-                          {CATEGORY_OPTIONS.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                          {CATEGORY_OPTIONS.map((c) => <MenuItem key={c} value={c}>{c === "nuts_dry_fruits" ? "nuts / dry fruits" : c}</MenuItem>)}
                         </TextField>
                       </Stack>
                     </Stack>

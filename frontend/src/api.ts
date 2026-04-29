@@ -4,6 +4,14 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 export type ApiError = { error?: string; message?: string };
 
+const AUTH_INVALID_EVENT = "cartsense:auth-invalid";
+const MEMBERSHIP_REVOKED_EVENT = "cartsense:membership-revoked";
+
+function emitClientAuthEvent(name: string, detail?: Record<string, unknown>) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
 export async function apiFetch<T>(path: string, opts?: RequestInit & { token?: string }): Promise<T> {
   const url = `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
   const headers: Record<string, string> = {
@@ -28,11 +36,21 @@ export async function apiFetch<T>(path: string, opts?: RequestInit & { token?: s
     }
     const message =
       payload?.error || payload?.message || `Request failed with status ${res.status}`;
+
+    if (res.status === 401) {
+      emitClientAuthEvent(AUTH_INVALID_EVENT, { path, status: res.status, message });
+    }
+
+    if (
+      res.status === 403 &&
+      /not a member of that household|only the household owner can remove members/i.test(message)
+    ) {
+      emitClientAuthEvent(MEMBERSHIP_REVOKED_EVENT, { path, status: res.status, message });
+    }
+
     throw new Error(message);
   }
 
-  // Some endpoints may return empty body.
   if (res.status === 204) return undefined as unknown as T;
   return (await res.json()) as T;
 }
-
